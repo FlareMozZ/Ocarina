@@ -50,8 +50,6 @@ CREATE TABLE public.rooms (
   
   -- Current track payload synced via Supabase Realtime/Presence
   current_track JSONB DEFAULT '{}'::jsonb, -- { "title": "Numb", "artist": "Linkin Park", "albumArt": "...", "uri": "..." }
-  device_queue JSONB DEFAULT '[]'::jsonb,
-  session_started_at TIMESTAMPTZ DEFAULT NOW(),
   
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -68,7 +66,6 @@ CREATE TABLE public.track_drops (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   room_id UUID REFERENCES public.rooms(id) ON DELETE CASCADE,
   sender_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-  sender_name TEXT NOT NULL DEFAULT 'Guest listener',
   receiver_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
   
   spotify_uri TEXT NOT NULL,
@@ -77,7 +74,6 @@ CREATE TABLE public.track_drops (
   album_art TEXT,
   
   status TEXT DEFAULT 'QUEUED' CHECK (status IN ('QUEUED', 'PLAYED', 'FAILED')),
-  session_started_at TIMESTAMPTZ DEFAULT NOW(),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

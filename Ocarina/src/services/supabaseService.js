@@ -55,6 +55,43 @@ export async function getFriendDashboard(userId) {
   }));
 }
 
+export async function searchProfiles(username, currentUserId) {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, username, avatar_url, is_guest')
+    .ilike('username', `%${username.trim()}%`)
+    .neq('id', currentUserId)
+    .limit(8);
+  if (error) throw error;
+  return data || [];
+}
+
+export async function sendFriendRequest(friendId) {
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  if (userError) throw userError;
+  if (!userData.user) throw new Error('Sign in before adding friends.');
+  const { data, error } = await supabase.from('friendships').insert({
+    user_id: userData.user.id,
+    friend_id: friendId,
+    status: 'PENDING',
+  }).select().single();
+  if (error?.code === '23505') throw new Error('This friendship request already exists.');
+  if (error) throw error;
+  return data;
+}
+
+export async function getFriendRequests(userId) {
+  const { data, error } = await supabase.from('friendships').select('id, created_at, user:user_id (id, username, avatar_url)').eq('friend_id', userId).eq('status', 'PENDING').order('created_at', { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function acceptFriendRequest(requestId) {
+  const { data, error } = await supabase.from('friendships').update({ status: 'ACCEPTED' }).eq('id', requestId).select().single();
+  if (error) throw error;
+  return data;
+}
+
 export async function getSentRecommendations(userId) {
   const { data, error } = await supabase
     .from('track_drops')
@@ -73,15 +110,22 @@ export async function getSentRecommendations(userId) {
 }
 
 export async function createListenerRoom(userId, roomCode, currentTrack = {}) {
-  const { data, error } = await supabase.from('rooms').upsert({
+  const sessionStartedAt = new Date().toISOString();
+  const payload = {
     host_id: userId,
     room_code: roomCode,
     is_active: true,
     current_track: currentTrack,
-    last_ping_at: new Date().toISOString(),
-  }, { onConflict: 'host_id' }).select().single();
-  if (error) throw error;
-  return data;
+    session_started_at: sessionStartedAt,
+    last_ping_at: sessionStartedAt,
+  };
+  let response = await supabase.from('rooms').upsert(payload, { onConflict: 'host_id' }).select().single();
+  if (response.error?.code === 'PGRST204') {
+    // Older deployments do not have the optional session columns yet.
+    response = await supabase.from('rooms').upsert({ host_id: userId, room_code: roomCode, is_active: true, current_track: currentTrack }, { onConflict: 'host_id' }).select().single();
+  }
+  if (response.error) throw response.error;
+  return { ...response.data, session_started_at: response.data.session_started_at || sessionStartedAt };
 }
 
 export async function getRoomByCode(roomCode) {
@@ -96,24 +140,68 @@ export async function getRoomForHost(hostId) {
   return data;
 }
 
-export async function getRoomQueue(roomId) {
-  const { data, error } = await supabase.from('track_drops').select('*, sender:sender_id (id, username)').eq('room_id', roomId).eq('status', 'QUEUED').order('created_at', { ascending: true });
+export async function getRoomQueue(roomId, sessionStartedAt) {
+  let query = supabase.from('track_drops').select('*, sender:sender_id (id, username)').eq('room_id', roomId).eq('status', 'QUEUED').order('created_at', { ascending: true });
+  if (sessionStartedAt) query = query.gte('created_at', sessionStartedAt);
+  const { data, error } = await query;
   if (error) throw error;
   return data || [];
 }
 
-export async function addTrackDrop({ roomId, senderId, receiverId, track }) {
-  const { data, error } = await supabase.from('track_drops').insert({
+export function mapDropToTrack(item) {
+  return {
+    id: item.id,
+    track: { id: item.spotify_uri, uri: item.spotify_uri, title: item.title, artist: item.artist, albumArt: item.album_art },
+    addedBy: item.sender?.username || item.sender_name || 'Guest listener',
+    votes: 0,
+  };
+}
+
+export async function getRoomHistory(roomId, filters = {}) {
+  let query = supabase.from('track_drops').select('*, sender:sender_id (id, username)').eq('room_id', roomId).eq('status', 'PLAYED').order('created_at', { ascending: false });
+  if (filters.senderId) query = query.eq('sender_id', filters.senderId);
+  if (filters.from) query = query.gte('created_at', filters.from);
+  if (filters.to) query = query.lte('created_at', filters.to);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+export async function markRoomDropsPlayed(roomId, trackUris) {
+  if (!trackUris.length) return;
+  const { error } = await supabase.from('track_drops').update({ status: 'PLAYED' }).eq('room_id', roomId).in('spotify_uri', trackUris).eq('status', 'QUEUED');
+  if (error) throw error;
+}
+
+export async function addTrackDrop({ roomId, senderId, receiverId, senderName, track }) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  let activeUser = sessionData.session?.user || null;
+  if (!activeUser && !senderId) {
+    const { data: guestData, error: guestError } = await supabase.auth.signInAnonymously();
+    if (guestError) {
+      throw new Error('Your guest session is missing. Enable Anonymous Auth in Supabase, then rejoin the room.');
+    }
+    activeUser = guestData.user || guestData.session?.user || null;
+  }
+  const activeSenderId = senderId || activeUser?.id;
+  if (!activeSenderId) throw new Error('Your session is missing. Please sign in again and rejoin the room.');
+  if (!receiverId) throw new Error('This room has no host profile yet.');
+  const dropPayload = {
     room_id: roomId,
-    sender_id: senderId,
+    sender_id: activeSenderId,
     receiver_id: receiverId,
     spotify_uri: track.uri,
     title: track.title,
     artist: track.artist,
     album_art: track.albumArt,
-  }).select().single();
-  if (error) throw error;
-  return data;
+    sender_name: senderName || 'Guest listener',
+  };
+  let response = await supabase.from('track_drops').insert(dropPayload).select().single();
+  if (response.error?.code === 'PGRST204') {
+    response = await supabase.from('track_drops').insert({ ...dropPayload, sender_name: undefined }).select().single();
+  }
+  if (response.error) throw response.error;
+  return response.data;
 }
 
 export function subscribeToRoom(roomId, onChange) {
@@ -161,10 +249,23 @@ export async function getSpotifyPlayback(providerToken) {
 }
 
 export async function updateRoomPlayback(roomId, playback) {
-  const { data, error } = await supabase.from('rooms').update({
+  const payload = {
     current_track: playback.currentlyPlaying || {},
+    device_queue: playback.spotifyQueue || [],
     updated_at: new Date().toISOString(),
-  }).eq('id', roomId).select().single();
-  if (error) throw error;
-  return data;
+  };
+  let response = await supabase.from('rooms').update(payload).eq('id', roomId).select().single();
+  if (response.error?.code === 'PGRST204') {
+    response = await supabase.from('rooms').update({ current_track: payload.current_track, updated_at: payload.updated_at }).eq('id', roomId).select().single();
+  }
+  if (response.error) throw response.error;
+  return response.data;
+}
+
+export async function pushTrackToSpotifyQueue(providerToken, trackUri) {
+  const response = await fetch(`https://api.spotify.com/v1/me/player/queue?uri=${encodeURIComponent(trackUri)}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${providerToken}` },
+  });
+  if (!response.ok) throw new Error('Spotify did not accept this queue item. Make sure Spotify is active on a device.');
 }

@@ -19,6 +19,11 @@ CREATE POLICY "Users can view their own friendships"
 CREATE POLICY "Users can send or accept friendship requests"
   ON public.friendships FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
 
+CREATE POLICY "Recipients can accept friendship requests"
+  ON public.friendships FOR UPDATE TO authenticated
+  USING (auth.uid() = friend_id)
+  WITH CHECK (auth.uid() = friend_id AND status IN ('ACCEPTED', 'BLOCKED'));
+
 CREATE POLICY "Users can delete their friendships"
   ON public.friendships FOR DELETE TO authenticated
   USING (auth.uid() = user_id OR auth.uid() = friend_id);
@@ -51,3 +56,8 @@ CREATE POLICY "Anyone can drop a track into an active room"
       SELECT 1 FROM public.rooms WHERE rooms.id = track_drops.room_id AND rooms.is_active = true
     )
   );
+
+CREATE POLICY "Hosts can mark drops as played"
+  ON public.track_drops FOR UPDATE TO authenticated
+  USING (EXISTS (SELECT 1 FROM public.rooms WHERE rooms.id = track_drops.room_id AND rooms.host_id = auth.uid()))
+  WITH CHECK (EXISTS (SELECT 1 FROM public.rooms WHERE rooms.id = track_drops.room_id AND rooms.host_id = auth.uid()));

@@ -25,6 +25,12 @@ node server.js
 ```
 
 Ocean continues to own Spotify OAuth token exchange, token refresh, search, and playback queueing. Supabase owns profiles, friendships, active room rows, track drops, and Realtime subscriptions. The SQL files in `../SQL` are the database contract.
+
+Before testing session-aware queues, run `../SQL/session_history_migration.sql` in the Supabase SQL editor. Ocarina temporarily falls back to the original room columns when that migration has not been applied, but older deployments cannot separate queue history by session until the migration is run.
+
+## Multiple devices
+
+Spotify permits one active playback stream per account. The device currently playing is the source of truth: the signed-in Ocarina host publishes that account's current track and queue, while other Ocarina devices observe the room through Supabase Realtime. A second Ocarina device must not be treated as a second player; it can view and contribute drops, but its Spotify playback state may be idle or mirror the account's single active device.
 # React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
