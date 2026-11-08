@@ -1,36 +1,41 @@
 # Ocarina
 
-Ocarina is the frontend for the shared music room experience. It supports three entry paths:
+Ocarina is the frontend for shared Spotify listening rooms. The Ocean backend owns authentication, Spotify access, room state, and social data; the browser communicates with it over REST and Socket.IO.
 
-- Spotify login: opens the bandwagon dashboard. Users can see active friends, enter their rooms, send recommendations, and review sent songs. This path does not create a room automatically.
-- Start a listening room: creates the authenticated user's `rooms` row and then joins the playback room.
-- Guest join: uses Supabase anonymous auth, then joins an existing room by code.
+## Features
+
+- Spotify sign-in creates a room automatically when an active Spotify device is available. Otherwise, sign-in opens the friends dashboard.
+- Guests can join an active room with a name and room code without a Spotify account.
+- Discover friends' live rooms, see the current track and recent listening context, send quick drops, and accept friend requests.
+- Search Spotify from a room, contribute tracks, vote, and see a fair-turn queue. Hosts can lock queue positions.
+- Send two-song chains, review played/queued drops and echo feedback, and leave post-session notes.
+- Revisit unplayed recommendations from the 48-hour backlog.
 
 ## Local setup
 
-Copy `.env.example` to `.env.local` and fill in the browser-safe Supabase URL and publishable/anon key. Never put the Supabase service-role key or Spotify client secret in Ocarina.
+For local Spotify OAuth, register `http://127.0.0.1:5000/auth/callback` in the Spotify app. Start Vite and Ocean, then open Ocarina at `http://127.0.0.1:5173` (not `localhost`): Spotify requires an explicit loopback IP, and the session cookie must stay on the same host. Ocean's local `FRONTEND_URL` should be `http://127.0.0.1:5173`. Set `VITE_BACKEND_URL` in `.env.local` only if Ocean is hosted separately; by default the frontend uses its own hostname on port 5000. No Supabase credentials or Spotify secrets belong in the frontend.
 
-Run the frontend from this folder:
+Run Ocarina from this folder:
 
 ```bash
 npm install
 npm run dev
 ```
 
-Run the backend separately from `../Ocean`:
+Run Ocean separately from `../Ocean`:
 
 ```bash
 npm install
 node server.js
 ```
 
-Ocean continues to own Spotify OAuth token exchange, token refresh, search, and playback queueing. Supabase owns profiles, friendships, active room rows, track drops, and Realtime subscriptions. The SQL files in `../SQL` are the database contract.
+Configure Ocean's `FRONTEND_URL` to match the Ocarina origin so credentialed API and Socket.IO requests can use the `ocarina_session` cookie. Set `SPOTIFY_REDIRECT_URI` to the exact registered redirect URI in `Ocean/.env`. Keep the frontend, callback, and API on the same hostname so the browser sends the session cookie after OAuth. Ocean also requires a private `JWT_SECRET` in `Ocean/.env` to sign browser sessions; keep it out of source control and use a strong random value.
 
-Before testing session-aware queues, run `../SQL/session_history_migration.sql` in the Supabase SQL editor. Ocarina temporarily falls back to the original room columns when that migration has not been applied, but older deployments cannot separate queue history by session until the migration is run.
+For an existing database, run `../SQL/ocean_backend_migration.sql` in the Supabase SQL editor. The original `ini.sql` and `initiation.sql` describe the earlier Supabase-auth backend and do not create Ocean's `spotify_tokens` or `backlogs` tables or all of Ocean's room/drop columns. Run the read-only backend checks from `../Ocean` with `npm run validate`; they check required environment variables, Supabase DNS and schema, Spotify API access, OAuth redirect configuration, backend health, and credentialed CORS. This does not perform Spotify browser consent or create a room; complete those once from the browser after the validator passes. Ocean accesses Supabase and Spotify server-side.
 
-## Multiple devices
+## Playback and rooms
 
-Spotify permits one active playback stream per account. The device currently playing is the source of truth: the signed-in Ocarina host publishes that account's current track and queue, while other Ocarina devices observe the room through Supabase Realtime. A second Ocarina device must not be treated as a second player; it can view and contribute drops, but its Spotify playback state may be idle or mirror the account's single active device.
+Spotify's active device is the source of playback. The Ocean backend synchronizes playback and room presence, while Socket.IO broadcasts queue changes, votes, lock state, recent plays, echoes, and room closure. A second Ocarina device can observe and contribute to a room, but does not create a second Spotify playback stream.
 # React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
